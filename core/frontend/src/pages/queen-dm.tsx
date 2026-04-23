@@ -23,6 +23,32 @@ import { getQueenForAgent, slugToColonyId } from "@/lib/colony-registry";
 
 const makeId = () => Math.random().toString(36).slice(2, 9);
 
+// Remembers the last session the user had open in each queen DM so that
+// navigating away (e.g. to another queen) and back lands on the session
+// they were just in, instead of whichever session the server picks.
+const lastSessionKey = (queenId: string) => `hive:queen:${queenId}:lastSession`;
+const readLastSession = (queenId: string): string | null => {
+  try {
+    return localStorage.getItem(lastSessionKey(queenId));
+  } catch {
+    return null;
+  }
+};
+const writeLastSession = (queenId: string, sessionId: string) => {
+  try {
+    localStorage.setItem(lastSessionKey(queenId), sessionId);
+  } catch {
+    /* storage disabled/full — best-effort */
+  }
+};
+const clearLastSession = (queenId: string) => {
+  try {
+    localStorage.removeItem(lastSessionKey(queenId));
+  } catch {
+    /* ignore */
+  }
+};
+
 export default function QueenDM() {
   const { queenId } = useParams<{ queenId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -199,6 +225,19 @@ export default function QueenDM() {
   useEffect(() => {
     if (!queenId) return;
 
+    // If we arrived without an explicit session in the URL and aren't
+    // bootstrapping a new one, redirect to the last session the user had
+    // open for this queen. Session IDs are always of the form
+    // "session_<timestamp>_<hex>", so we gate on that prefix to avoid
+    // redirecting to anything unexpected that landed in storage.
+    if (!selectedSessionParam && newSessionFlag !== "1") {
+      const stored = readLastSession(queenId);
+      if (stored && stored.startsWith("session_")) {
+        setSearchParams({ session: stored }, { replace: true });
+        return;
+      }
+    }
+
     resetViewState();
     setLoading(true);
 
@@ -314,7 +353,17 @@ export default function QueenDM() {
         await restoreMessages(sid, () => cancelled);
         refresh();
       } catch {
-        // Session creation failed
+        // Session creation/selection failed. If the URL param came from
+        // our own localStorage restore, the stored session is stale (e.g.
+        // deleted on disk) — clear it so the next navigation falls
+        // through to getOrCreate instead of looping on the bad id.
+        if (
+          queenId &&
+          selectedSessionParam &&
+          selectedSessionParam === readLastSession(queenId)
+        ) {
+          clearLastSession(queenId);
+        }
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -336,6 +385,13 @@ export default function QueenDM() {
     resetViewState,
     setSearchParams,
   ]);
+
+  // Remember the session the user is currently viewing so switching queens
+  // and coming back lands on it instead of whatever the server picks.
+  useEffect(() => {
+    if (!queenId || !sessionId) return;
+    writeLastSession(queenId, sessionId);
+  }, [queenId, sessionId]);
 
   useEffect(() => {
     if (!queenId) return;
